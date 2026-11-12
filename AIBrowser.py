@@ -24,11 +24,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+
 # Interne Einstellungen: Das Modell wird nicht in der App ausgewählt.
 SERVICE = "browser-writing-assistant"
 KEY_NAME = "openai"
 MODEL = "gpt-4.1-mini"
 HOTKEY = "<ctrl>+<alt>+<space>"
+
+DEFAULT_PROMPT = (
+    "Beantworte die Frage oder löse die Aufgabe im markierten Text. "
+    "Gib nur die Antwort zurück, ohne zusätzliche Erklärung."
+)
 
 
 class Events(QObject):
@@ -72,16 +78,12 @@ class CloudAI:
 
     @classmethod
     def draft(cls, prompt, context):
-        user_text = f"Anweisung:\n{prompt}"
-        if context:
-            user_text += f"\n\nMarkierter Text als Kontext:\n{context}"
-
         response = cls.client().responses.create(
             model=MODEL,
             input=(
-                "Schreibe einen passenden Antwortentwurf. "
-                "Gib nur den Entwurf zurück, ohne zusätzliche Erklärung.\n\n"
-                + user_text
+                "Befolge die Anweisung zum folgenden markierten Text.\n\n"
+                f"Anweisung:\n{prompt}\n\n"
+                f"Markierter Text:\n{context}"
             ),
         )
         return response.output_text
@@ -149,47 +151,6 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "Fehler", str(exc))
 
 
-class DraftDialog(QDialog):
-    def __init__(self, text, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Entwurf prüfen")
-        self.resize(600, 400)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(
-            QLabel(
-                "Prüfe oder bearbeite den Entwurf. "
-                "Beim Übernehmen wird er in die Zwischenablage kopiert."
-            )
-        )
-
-        self.editor = QTextEdit()
-        self.editor.setPlainText(text)
-        layout.addWidget(self.editor)
-
-        buttons = QHBoxLayout()
-        copy_button = QPushButton("Übernehmen & kopieren")
-        discard_button = QPushButton("Verwerfen")
-        buttons.addWidget(copy_button)
-        buttons.addWidget(discard_button)
-        layout.addLayout(buttons)
-
-        copy_button.clicked.connect(self.copy_and_close)
-        discard_button.clicked.connect(self.reject)
-
-    def copy_and_close(self):
-        try:
-            pyperclip.copy(self.editor.toPlainText())
-        except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Zwischenablage-Fehler",
-                f"Der Text konnte nicht kopiert werden:\n{exc}",
-            )
-            return
-        self.accept()
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -197,11 +158,10 @@ class MainWindow(QMainWindow):
         self.resize(520, 300)
 
         self.context_text = ""
-        self.previous_clipboard = ""
 
         self.events = Events()
-        self.events.hotkey_pressed.connect(self.capture_selection)
-        self.events.draft_finished.connect(self.show_draft)
+        self.events.hotkey_pressed.connect(self.begin_capture_selection)
+        self.events.draft_finished.connect(self.copy_draft_to_clipboard)
         self.events.draft_failed.connect(self.show_error)
         self.events.test_finished.connect(self.show_test_result)
         self.events.test_failed.connect(self.show_error)
@@ -215,17 +175,17 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        layout.addWidget(QLabel("Frage oder Anweisung:"))
+        layout.addWidget(QLabel("Optionale Anweisung:"))
 
         self.prompt = QTextEdit()
         self.prompt.setPlaceholderText(
-            "Zum Beispiel: Formuliere eine freundliche Antwort …"
+            "Leer lassen, um die Standardanweisung zu verwenden."
         )
         self.prompt.setMaximumHeight(110)
         layout.addWidget(self.prompt)
 
         self.use_selection = QCheckBox(
-            "Beim Hotkey markierten Browsertext als Kontext verwenden"
+            "Beim Hotkey markierten Browsertext verwenden"
         )
         self.use_selection.setChecked(True)
         layout.addWidget(self.use_selection)
@@ -245,7 +205,7 @@ class MainWindow(QMainWindow):
         draft_button.clicked.connect(self.create_draft)
 
         self.statusBar().showMessage(
-            "Im Hintergrund aktiv. Hotkey: Ctrl+Alt+Space"
+            "Im Hintergrund aktiv. Text markieren und Ctrl+Alt+Space drücken."
         )
 
     def setup_tray(self):
@@ -297,23 +257,23 @@ class MainWindow(QMainWindow):
         self.activateWindow()
         self.prompt.setFocus()
 
-    def capture_selection(self):
-        # Der globale Hotkey wird von einem Hintergrundthread ausgelöst.
-        # Die UI- und Zwischenablageaktionen laufen im Qt-Hauptthread.
-        QTimer.singleShot(0, self._copy_selection)
-
-    def _copy_selection(self):
+    def begin_capture_selection(self):
+        """Liest die Browser-Auswahl aus der Zwischenablage aus."""
         if not self.use_selection.isChecked():
-            self.context_text = ""
-            self.show_prompt()
+            self.statusBar().showMessage(
+                "Aktiviere die Option für markierten Text."
+            )
             return
 
         try:
-            self.previous_clipboard = pyperclip.paste()
+            # Leeren, damit eine unveränderte alte Zwischenablage nicht
+            # fälschlich als neue Auswahl erkannt wird.
+            pyperclip.copy("")
 
             controller = keyboard.Controller()
             modifier = (
-                keyboard.Key.cmd if sys.platform == "darwin"
+                keyboard.Key.cmd
+                if sys.platform == "darwin"
                 else keyboard.Key.ctrl
             )
 
@@ -322,54 +282,49 @@ class MainWindow(QMainWindow):
             controller.release("c")
             controller.release(modifier)
 
-            QTimer.singleShot(300, self._read_selection)
+            self.statusBar().showMessage("Auswahl wird übernommen …")
+            QTimer.singleShot(400, self.read_selection)
+
+        except Exception as exc:
+            self.show_error(
+                "Die Browserauswahl konnte nicht kopiert werden. "
+                "Prüfe die Tastatur- und Zwischenablageberechtigungen.\n\n"
+                f"Details: {exc}"
+            )
+
+    def read_selection(self):
+        try:
+            self.context_text = pyperclip.paste().strip()
         except Exception as exc:
             self.context_text = ""
-            self.show_prompt()
-            QMessageBox.warning(
-                self,
-                "Auswahl kopieren",
-                "Die Browserauswahl konnte nicht kopiert werden. "
-                "Du kannst den Text vorher manuell kopieren.\n\n"
-                f"Details: {exc}",
-            )
-
-    def _read_selection(self):
-        try:
-            copied_text = pyperclip.paste().strip()
-            old_text = self.previous_clipboard.strip()
-
-            # Wenn sich die Zwischenablage nicht geändert hat, wird kein
-            # vorheriger, nicht zur aktuellen Auswahl gehörender Text benutzt.
-            self.context_text = copied_text if copied_text != old_text else ""
-        except Exception:
-            self.context_text = ""
-
-        self.show_prompt()
-
-        if self.context_text:
-            self.statusBar().showMessage(
-                "Markierter Text wurde als Kontext übernommen."
-            )
-        else:
-            self.statusBar().showMessage(
-                "Keine neue Auswahl kopiert. Du kannst Text vorher manuell kopieren."
-            )
-
-    def create_draft(self):
-        prompt = self.prompt.toPlainText().strip()
-        if not prompt:
-            QMessageBox.warning(
-                self,
-                "Eingabe fehlt",
-                "Gib zuerst eine Frage oder Anweisung ein.",
+            self.show_error(
+                "Die Zwischenablage konnte nicht gelesen werden.\n\n"
+                f"Details: {exc}"
             )
             return
 
+        if not self.context_text:
+            self.statusBar().showMessage(
+                "Keine Auswahl erkannt. Markiere Text und drücke "
+                "Ctrl+Alt+Space."
+            )
+            return
+
+        self.create_draft()
+
+    def create_draft(self):
+        prompt = self.prompt.toPlainText().strip() or DEFAULT_PROMPT
         context = self.context_text if self.use_selection.isChecked() else ""
 
+        if not context:
+            self.statusBar().showMessage(
+                "Keine Auswahl erkannt. Markiere Text und drücke "
+                "Ctrl+Alt+Space."
+            )
+            return
+
         self.setEnabled(False)
-        self.statusBar().showMessage("Entwurf wird erstellt …")
+        self.statusBar().showMessage("KI verarbeitet die Auswahl …")
 
         def worker():
             try:
@@ -379,6 +334,25 @@ class MainWindow(QMainWindow):
                 self.events.draft_failed.emit(str(exc))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def copy_draft_to_clipboard(self, text):
+        self.setEnabled(True)
+
+        try:
+            pyperclip.copy(text)
+            self.context_text = ""
+            self.statusBar().showMessage(
+                "KI-Antwort kopiert. Mit Ctrl+V im Browser einfügen."
+            )
+        except Exception as exc:
+            self.statusBar().showMessage(
+                "Kopieren in die Zwischenablage fehlgeschlagen."
+            )
+            QMessageBox.critical(
+                self,
+                "Zwischenablage-Fehler",
+                f"Die KI-Antwort konnte nicht kopiert werden:\n{exc}",
+            )
 
     def test_connection(self):
         self.setEnabled(False)
@@ -392,11 +366,6 @@ class MainWindow(QMainWindow):
                 self.events.test_failed.emit(str(exc))
 
         threading.Thread(target=worker, daemon=True).start()
-
-    def show_draft(self, text):
-        self.setEnabled(True)
-        self.statusBar().showMessage("Entwurf fertig. Bitte prüfen.")
-        DraftDialog(text, self).exec()
 
     def show_test_result(self, text):
         self.setEnabled(True)
@@ -426,8 +395,6 @@ if __name__ == "__main__":
     app.setQuitOnLastWindowClosed(False)
 
     window = MainWindow()
-
-    # Startet im Hintergrund. Öffnen über Hotkey oder Tray-Symbol.
-    window.hide()
+    window.show()
 
     sys.exit(app.exec())
