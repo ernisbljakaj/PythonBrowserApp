@@ -1,13 +1,17 @@
-
 import subprocess
 import requests
 import time
 import threading
 
-MODEL = "qwen3:8b"
+# ── API-Einstellungen: hier deine Werte eintragen ──────────────────
+API_URL = "https://api.example.com/v1/chat/completions"
+MODEL = "dein-modellname"
+API_KEY = "HIER_DEIN_API_KEY_EINFÜGEN"
+# ──────────────────────────────────────────────────────────────────
 
-letzte_frage = None
 busy = False
+zu_ignorieren = None
+
 
 def clipboard_lesen():
     result = subprocess.run(
@@ -17,6 +21,7 @@ def clipboard_lesen():
     )
     return result.stdout if result.returncode == 0 else ""
 
+
 def clipboard_schreiben(text):
     subprocess.run(
         ["wl-copy"],
@@ -25,33 +30,49 @@ def clipboard_schreiben(text):
         check=True
     )
 
+
 def ki_loesen(frage):
-    global busy
+    global busy, zu_ignorieren
 
     try:
         print("\nKI denkt...")
 
         response = requests.post(
-            "http://localhost:11434/api/generate",
+            API_URL,
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+            },
             json={
                 "model": MODEL,
-                "prompt": (
-                    "Beantworte die Frage korrekt und kurz. "
-                    "Gib nur die Antwort aus:\n" + frage
-                ),
-                "think": False,
-                "stream": False
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Beantworte die Frage korrekt und kurz. "
+                            "Gib nur die Antwort aus:\n" + frage
+                        ),
+                    }
+                ],
             },
-            timeout=300
+            timeout=300,
         )
 
         response.raise_for_status()
-        antwort = response.json()["response"]
+        daten = response.json()
+        antwort = daten["choices"][0]["message"]["content"]
 
+        # Die KI-Antwort nicht gleich erneut an die API senden.
+        zu_ignorieren = antwort
         clipboard_schreiben(antwort)
 
         print("\nAntwort:", antwort)
         print("FERTIG! STRG+V drücken.")
+
+    except requests.exceptions.HTTPError as e:
+        print("HTTP-Fehler:", e)
+        if e.response is not None:
+            print("Antwort des Anbieters:", e.response.text)
 
     except Exception as e:
         print("Fehler:", e)
@@ -59,13 +80,20 @@ def ki_loesen(frage):
     finally:
         busy = False
 
+
+if API_KEY == "HIER_DEIN_API_KEY_EINFÜGEN":
+    raise SystemExit("Bitte oben in der Datei deinen API-Key eintragen.")
+
+if not API_URL or not MODEL:
+    raise SystemExit("Bitte API_URL und MODEL oben in der Datei eintragen.")
+
 print("================================")
 print(" KI-ZWISCHENABLAGE AKTIV")
 print(" Modell:", MODEL)
 print("================================")
-print("STRG+C = KI fragen")
-print("STRG+V = Antwort einfügen")
-print("STRG+C im Terminal = Beenden")
+print("Kopiere eine Frage in die Zwischenablage.")
+print("Die Antwort wird automatisch hineinkopiert.")
+print("STRG+C im Terminal = Programm beenden")
 
 letzter_text = clipboard_lesen()
 
@@ -73,15 +101,18 @@ while True:
     try:
         text = clipboard_lesen()
 
-        if text and text != letzter_text and not busy:
+        if text and text != letzter_text:
             letzter_text = text
-            busy = True
 
-            threading.Thread(
-                target=ki_loesen,
-                args=(text,),
-                daemon=True
-            ).start()
+            if text == zu_ignorieren:
+                zu_ignorieren = None
+            elif not busy:
+                busy = True
+                threading.Thread(
+                    target=ki_loesen,
+                    args=(text,),
+                    daemon=True
+                ).start()
 
         time.sleep(0.3)
 
