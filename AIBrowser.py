@@ -2,6 +2,7 @@ import subprocess
 import requests
 import time
 import threading
+import os
 
 # ── API-Einstellungen: hier deine Werte eintragen ──────────────────
 API_URL = "https://api.example.com/v1/chat/completions"
