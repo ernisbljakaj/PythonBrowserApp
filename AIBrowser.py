@@ -1,9 +1,13 @@
 import os
 import random
+import shutil
 import subprocess
 import threading
 import time
 import requests
+
+IS_WINDOWS = os.name == "nt"
+CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
 
 
 def load_env(filepath=None):
@@ -59,27 +63,100 @@ state_lock = threading.Lock()
 
 def get_clipboard():
     try:
+        if IS_WINDOWS:
+            r = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=5,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            return r.stdout if r.returncode == 0 and r.stdout else ""
+
+        # Linux: Wayland (wl-paste) oder X11 (xclip / xsel)
+        if shutil.which("wl-paste"):
+            cmd = ["wl-paste", "--no-newline"]
+        elif shutil.which("xclip"):
+            cmd = ["xclip", "-o", "-selection", "clipboard"]
+        elif shutil.which("xsel"):
+            cmd = ["xsel", "--clipboard", "--output"]
+        else:
+            return ""
+
         r = subprocess.run(
-            ["wl-paste", "--no-newline"],
+            cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
         )
-        return r.stdout if r.returncode == 0 else ""
+        return r.stdout if r.returncode == 0 and r.stdout else ""
     except Exception:
         return ""
 
 
 def set_clipboard(text):
-    subprocess.run(["wl-copy"], input=text.encode("utf-8"), check=False)
+    try:
+        if IS_WINDOWS:
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; $input | Set-Clipboard",
+                ],
+                input=text,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            return
+
+        # Linux: Wayland (wl-copy) oder X11 (xclip / xsel)
+        if shutil.which("wl-copy"):
+            cmd = ["wl-copy"]
+        elif shutil.which("xclip"):
+            cmd = ["xclip", "-i", "-selection", "clipboard"]
+        elif shutil.which("xsel"):
+            cmd = ["xsel", "--clipboard", "--input"]
+        else:
+            print("Kein Clipboard-Tool gefunden (wl-copy, xclip oder xsel).")
+            return
+
+        subprocess.run(cmd, input=text.encode("utf-8"), check=False)
+    except Exception as e:
+        print(f"Fehler beim Schreiben in die Zwischenablage: {e}")
 
 
 def notify(message):
+    print(message)
     try:
-        subprocess.run(["notify-send", "KI-Assistent", message], check=False)
+        if IS_WINDOWS:
+            safe_msg = message.replace("'", "''")
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$n = New-Object System.Windows.Forms.NotifyIcon; "
+                "$n.Icon = [System.Drawing.SystemIcons]::Information; "
+                "$n.Visible = $true; "
+                f"$n.ShowBalloonTip(3000, 'KI-Assistent', '{safe_msg}', [System.Windows.Forms.ToolTipIcon]::Info); "
+                "Start-Sleep -Milliseconds 3500; "
+                "$n.Dispose()"
+            )
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                creationflags=CREATE_NO_WINDOW,
+            )
+        elif shutil.which("notify-send"):
+            subprocess.run(["notify-send", "KI-Assistent", message], check=False)
     except Exception:
         pass
-    print(message)
 
 
 def fetch_available_models(provider):
@@ -231,7 +308,7 @@ def main():
 
     with state_lock:
         last_text = get_clipboard().strip()
-    print("Clipboard-Überwachung gestartet. Mit Strg+C beenden.")
+    print(f"Clipboard-Überwachung gestartet ({'Windows' if IS_WINDOWS else 'Linux'}). Mit Strg+C beenden.")
 
     try:
         while True:
