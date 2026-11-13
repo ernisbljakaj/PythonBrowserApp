@@ -98,7 +98,6 @@ def fetch_available_models(provider):
         for item in raw_models:
             model_id = item.get("id", "").replace("models/", "")
             lower_id = model_id.lower()
-
             if not model_id or any(bad in lower_id for bad in EXCLUDE_KEYWORDS):
                 continue
             valid_ids.append(model_id)
