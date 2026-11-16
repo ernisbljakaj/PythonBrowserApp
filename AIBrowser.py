@@ -1,4 +1,5 @@
 import os
+import tempfile
 import logging
 import ctypes
 import ctypes.wintypes
@@ -17,8 +18,12 @@ from single_instance import SingleInstance
 
 IS_WINDOWS = os.name == "nt"
 LOG_DIR=os.path.join(os.getenv("LOCALAPPDATA",os.path.expanduser("~")),"AIClipboardCloud")
-os.makedirs(LOG_DIR,exist_ok=True)
-logging.basicConfig(filename=os.path.join(LOG_DIR,"app.log"),level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s",force=True)
+try:
+    os.makedirs(LOG_DIR,exist_ok=True)
+    logging.basicConfig(filename=os.path.join(LOG_DIR,"app.log"),level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s",force=True)
+except OSError:
+    LOG_DIR=tempfile.gettempdir()
+    logging.basicConfig(filename=os.path.join(LOG_DIR,"AIClipboardCloud.log"),level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s",force=True)
 logging.info("Programmstart")
 CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
 
@@ -110,12 +115,22 @@ FREE_MODELS = {"Groq": ["openai/gpt-oss-20b"], "Google AI Studio": ["gemini-2.5-
 class WindowsClipboard:
     CF_UNICODETEXT=13;GMEM_MOVEABLE=2;WM_CLIPBOARDUPDATE=0x031D;WM_CLOSE=0x10;WM_DESTROY=2
     def __init__(self):
-        self.u,self.k=ctypes.windll.user32,ctypes.windll.kernel32;self.hwnd=None;self.thread=None;self.ready=threading.Event()
+        self.u=ctypes.WinDLL("user32",use_last_error=True);self.k=ctypes.WinDLL("kernel32",use_last_error=True);self.hwnd=None;self.thread=None;self.ready=threading.Event();self.error=None
         H=ctypes.c_void_p;U=ctypes.wintypes.UINT;B=ctypes.wintypes.BOOL
         for f,args,res in (("OpenClipboard",[H],B),("CloseClipboard",[],B),("EmptyClipboard",[],B),("GetClipboardData",[U],H),("SetClipboardData",[U,H],H),("AddClipboardFormatListener",[H],B),("RemoveClipboardFormatListener",[H],B)):
             x=getattr(self.u,f);x.argtypes=args;x.restype=res
         for f,args,res in (("GlobalAlloc",[U,ctypes.c_size_t],H),("GlobalLock",[H],H),("GlobalUnlock",[H],B),("GlobalFree",[H],H)):
             x=getattr(self.k,f);x.argtypes=args;x.restype=res
+        P=ctypes.WINFUNCTYPE(ctypes.c_ssize_t,H,U,ctypes.c_size_t,ctypes.c_ssize_t);self.P=P
+        class WC(ctypes.Structure):_fields_=[("style",U),("lpfnWndProc",P),("cbClsExtra",ctypes.c_int),("cbWndExtra",ctypes.c_int),("hInstance",H),("hIcon",H),("hCursor",H),("hbrBackground",H),("lpszMenuName",ctypes.wintypes.LPCWSTR),("lpszClassName",ctypes.wintypes.LPCWSTR)]
+        self.WC=WC
+        self.k.GetModuleHandleW.argtypes=[ctypes.wintypes.LPCWSTR];self.k.GetModuleHandleW.restype=H
+        self.u.RegisterClassW.argtypes=[ctypes.POINTER(WC)];self.u.RegisterClassW.restype=ctypes.wintypes.ATOM
+        self.u.CreateWindowExW.argtypes=[ctypes.wintypes.DWORD,ctypes.wintypes.LPCWSTR,ctypes.wintypes.LPCWSTR,ctypes.wintypes.DWORD,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,H,H,H,H];self.u.CreateWindowExW.restype=H
+        self.u.DefWindowProcW.argtypes=[H,U,ctypes.c_size_t,ctypes.c_ssize_t];self.u.DefWindowProcW.restype=ctypes.c_ssize_t
+        self.u.GetMessageW.argtypes=[ctypes.POINTER(ctypes.wintypes.MSG),H,U,U];self.u.GetMessageW.restype=ctypes.c_int
+        self.u.DispatchMessageW.argtypes=[ctypes.POINTER(ctypes.wintypes.MSG)];self.u.DispatchMessageW.restype=ctypes.c_ssize_t
+        self.u.PostMessageW.argtypes=[H,U,ctypes.c_size_t,ctypes.c_ssize_t];self.u.PostMessageW.restype=B
     def read(self):
         if not self.u.OpenClipboard(None):return ""
         try:
@@ -136,21 +151,27 @@ class WindowsClipboard:
             self.u.CloseClipboard()
     def start(self,callback):
         def run():
-            logging.info("Starte Win32-Clipboard-Listener")
-            P=ctypes.WINFUNCTYPE(ctypes.c_ssize_t,ctypes.c_void_p,ctypes.wintypes.UINT,ctypes.c_size_t,ctypes.c_ssize_t)
-            @P
-            def proc(h,m,w,l):
-                if m==self.WM_CLIPBOARDUPDATE:logging.info("Clipboard-Ereignis empfangen");callback()
-                if m==self.WM_DESTROY:self.u.PostQuitMessage(0)
-                return self.u.DefWindowProcW(h,m,w,l)
-            self._proc=proc;name="AIClipboardCloud";self.u.CreateWindowExW.restype=ctypes.c_void_p;self.u.RegisterClassW.restype=ctypes.wintypes.ATOM
-            class WC(ctypes.Structure):_fields_=[("style",ctypes.c_uint),("lpfnWndProc",P),("cbClsExtra",ctypes.c_int),("cbWndExtra",ctypes.c_int),("hInstance",ctypes.c_void_p),("hIcon",ctypes.c_void_p),("hCursor",ctypes.c_void_p),("hbrBackground",ctypes.c_void_p),("lpszMenuName",ctypes.c_wchar_p),("lpszClassName",ctypes.c_wchar_p)]
-            self._wc=WC(0,proc,0,0,self.k.GetModuleHandleW(None),None,None,None,None,name);self.u.RegisterClassW(ctypes.byref(self._wc));self.hwnd=self.u.CreateWindowExW(0,name,name,0,0,0,0,0,ctypes.c_void_p(-3),None,self._wc.hInstance,None)
-            if not self.hwnd or not self.u.AddClipboardFormatListener(self.hwnd):logging.error("Clipboard-Listener-Initialisierung fehlgeschlagen");self.ready.set();return
-            logging.info("Win32-Fenster und Clipboard-Listener registriert")
-            self.ready.set();msg=ctypes.wintypes.MSG()
-            while self.u.GetMessageW(ctypes.byref(msg),None,0,0)>0:self.u.DispatchMessageW(ctypes.byref(msg))
-        self.thread=threading.Thread(target=run,daemon=True);self.thread.start();self.ready.wait(2)
+            try:
+             logging.info("Starte Win32-Clipboard-Listener")
+             P=self.P
+             @P
+             def proc(h,m,w,l):
+                 if m==self.WM_CLIPBOARDUPDATE:logging.info("Clipboard-Ereignis empfangen");callback()
+                 if m==self.WM_DESTROY:self.u.PostQuitMessage(0)
+                 return self.u.DefWindowProcW(h,m,w,l)
+             self._proc=proc;name="AIClipboardCloud";inst=self.k.GetModuleHandleW(None);self._wc=self.WC(0,proc,0,0,inst,None,None,None,None,name)
+             if not self.u.RegisterClassW(ctypes.byref(self._wc)) and ctypes.get_last_error()!=1410: raise OSError(ctypes.get_last_error(),"RegisterClassW")
+             self.hwnd=self.u.CreateWindowExW(0,name,name,0,0,0,0,0,ctypes.c_void_p(-3),None,inst,None)
+             if not self.hwnd: raise OSError(ctypes.get_last_error(),"CreateWindowExW")
+             logging.info("Win32-Fenster erstellt")
+             if not self.u.AddClipboardFormatListener(self.hwnd): raise OSError(ctypes.get_last_error(),"AddClipboardFormatListener")
+             logging.info("Clipboard-Listener registriert");self.ready.set();msg=ctypes.wintypes.MSG();logging.info("Win32-Message-Loop gestartet")
+             while self.u.GetMessageW(ctypes.byref(msg),None,0,0)>0:self.u.DispatchMessageW(ctypes.byref(msg))
+            except Exception as e:
+             self.error=e;logging.exception("Win32-Listener-Initialisierung fehlgeschlagen");self.ready.set()
+        self.thread=threading.Thread(target=run,daemon=True);self.thread.start()
+        if not self.ready.wait(3): logging.error("Timeout beim Start des Win32-Listeners");self.error=TimeoutError("Win32-Listener-Timeout")
+        if self.error: raise RuntimeError("Windows-Clipboard-Listener konnte nicht gestartet werden") from self.error
     def stop(self):
         if self.hwnd:self.u.RemoveClipboardFormatListener(self.hwnd);self.u.PostMessageW(self.hwnd,self.WM_CLOSE,0,0)
         if self.thread:self.thread.join(2)
