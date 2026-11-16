@@ -132,15 +132,22 @@ class WindowsClipboard:
         self.u.DispatchMessageW.argtypes=[ctypes.POINTER(ctypes.wintypes.MSG)];self.u.DispatchMessageW.restype=ctypes.c_ssize_t
         self.u.PostMessageW.argtypes=[H,U,ctypes.c_size_t,ctypes.c_ssize_t];self.u.PostMessageW.restype=B
     def read(self):
-        if not self.u.OpenClipboard(None):return ""
-        try:
-            h=self.u.GetClipboardData(self.CF_UNICODETEXT);p=self.k.GlobalLock(h) if h else None
-            try:return ctypes.wstring_at(p) if p else ""
-            finally:
-                if p:self.k.GlobalUnlock(h)
-        finally:self.u.CloseClipboard()
+        for _ in range(10):
+            if self.u.OpenClipboard(None):
+                try:
+                    h=self.u.GetClipboardData(self.CF_UNICODETEXT);p=self.k.GlobalLock(h) if h else None
+                    try:return ctypes.wstring_at(p) if p else ""
+                    finally:
+                        if p:self.k.GlobalUnlock(h)
+                finally:self.u.CloseClipboard()
+            time.sleep(.03)
+        logging.error("Windows-Clipboard nach Wiederholungen nicht lesbar");return ""
     def write(self,text):
-        if not self.u.OpenClipboard(None):return False
+        for _ in range(10):
+            if self.u.OpenClipboard(None):break
+            time.sleep(.03)
+        else:
+            logging.error("Windows-Clipboard nach Wiederholungen nicht schreibbar");return False
         h=None
         try:
             self.u.EmptyClipboard();b=ctypes.create_unicode_buffer(text);h=self.k.GlobalAlloc(self.GMEM_MOVEABLE,ctypes.sizeof(b));p=self.k.GlobalLock(h);ctypes.memmove(p,b,ctypes.sizeof(b));self.k.GlobalUnlock(h)
@@ -210,8 +217,7 @@ def set_clipboard(text):
     try:
         if IS_WINDOWS:
             if WIN_CLIP:
-                WIN_CLIP.write(text)
-                return
+                return WIN_CLIP.write(text)
             subprocess.run(
                 [
                     "powershell",
@@ -342,6 +348,7 @@ def call_ai(prompt):
             for attempt in range(MAX_RETRIES_PER_MODEL + 1):
                 wait = 1.5 ** attempt + random.uniform(0, 0.5)
                 try:
+                    logging.info("%s-Anfrage gestartet",provider["name"])
                     print(f"Versuche {provider['name']} -> {model} (Versuch {attempt + 1})...")
                     r = requests.post(
                         chat_url,
@@ -354,6 +361,7 @@ def call_ai(prompt):
                         data = r.json()
                         promote_model(provider, model)
                         print(f"Erfolg über {provider['name']} ({model})")
+                        logging.info("%s-Antwort erhalten",provider["name"])
                         return data["choices"][0]["message"]["content"]
 
                     if r.status_code == 404:
@@ -402,19 +410,24 @@ def enqueue(text):
             try: request_queue.get_nowait()
             except queue.Empty: break
         request_queue.put_nowait((ticket, text))
+        logging.info("Anfrage eingereiht, Generation=%s",ticket)
 
 def worker():
     global last_text, own_text
     while True:
         ticket, text = request_queue.get()
+        logging.info("Worker hat Anfrage übernommen, Generation=%s",ticket)
         answer = call_ai(text)
         current = get_clipboard().strip()
         with state_lock:
-            if ticket != generation or current != text:
+            if ticket != generation:
+                logging.info("Antwort wegen neuerer Generation verworfen");continue
+            if current != text:
+                logging.info("Antwort wegen geändertem Clipboard verworfen");
                 continue
             if not answer: continue
             own_text = answer.strip(); last_text = own_text
-        set_clipboard(own_text)
+        if set_clipboard(own_text):logging.info("Antwort erfolgreich in Zwischenablage geschrieben")
         notify("Antwort ist in der Zwischenablage.")
 
 
@@ -439,6 +452,7 @@ def main():
             global own_text
             if not tray.active:return
             text=WIN_CLIP.read().strip()
+            logging.info("Clipboard-Text %s gelesen","erfolgreich" if text else "nicht verfügbar")
             with state_lock:
                 if not text:return
                 if text==own_text:
