@@ -150,6 +150,21 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(backend.read(), "Gräß e")
         self.assertNotIn("text", run.call_args.kwargs)
 
+    def test_missing_model_is_pulled_once(self):
+        ai = aibrowser.Ollama()
+        ai.executable = "/usr/bin/ollama"
+        ai.api = lambda *_args, **_kwargs: {"models": []}
+        with patch.object(aibrowser.subprocess, "run") as run:
+            self.assertEqual(ai.model(), aibrowser.FALLBACK)
+        run.assert_called_once_with(["/usr/bin/ollama", "pull", aibrowser.FALLBACK], check=True)
+
+    def test_missing_ollama_stops_when_installation_is_declined(self):
+        ai = aibrowser.Ollama(input_func=lambda _prompt: "n")
+        ai._find_executable = lambda: None
+        ai._confirm_install = lambda _message: False
+        with self.assertRaisesRegex(RuntimeError, "abgebrochen"):
+            ai._exe()
+
 
 if __name__ == "__main__":
     unittest.main()

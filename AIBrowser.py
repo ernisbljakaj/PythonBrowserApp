@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Automatische, lokale Ollama-Zwischenablage fuer Wayland und Windows."""
 from __future__ import annotations
-import ctypes, ctypes.wintypes, ipaddress, json, locale, os, re, shutil, subprocess, sys, threading, time
+import ctypes, ctypes.wintypes, ipaddress, json, locale, os, platform, re, shutil, subprocess, sys, tempfile, threading, time
+from pathlib import Path
 import urllib.request, urllib.error
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 URL="http://127.0.0.1:11434"; FALLBACK="qwen2.5:0.5b"; MAX_TEXT=12000
+OLLAMA_WINDOWS_INSTALLER="https://ollama.com/download/OllamaSetup.exe"
+OLLAMA_LINUX_DOWNLOAD="https://ollama.com/download/ollama-linux-{arch}.tar.zst"
 PROMPT="Antworte auf Deutsch, knapp und korrekt. Erfinde keine Fakten. Linux-Tipps zuerst sicher; kill -9 nur zuletzt."
 
 def memory(available=False):
@@ -34,14 +37,67 @@ def subnet(text):
     return f"Netzwerkadresse: {n.network_address}\nBroadcast-Adresse: {n.broadcast_address}\nSubnetzmaske: {n.netmask}\nCIDR: /{n.prefixlen}\nErster Host: {first}\nLetzter Host: {last}\nNutzbare Hosts: {usable}"
 
 class Ollama:
+    def __init__(self,input_func=input):
+        self.input=input_func;self.executable=None
+
+    def _find_executable(self):
+        found=shutil.which("ollama")
+        if found:return found
+        if os.name=="nt":
+            candidate=Path(os.getenv("LOCALAPPDATA",""))/"Programs"/"Ollama"/"ollama.exe"
+            if candidate.is_file():return str(candidate)
+        return None
+
+    def _confirm_install(self,message):
+        if not sys.stdin.isatty():
+            raise RuntimeError(message+" Nicht-interaktive Installation abgebrochen.")
+        return self.input(message+" [j/N] ").strip().lower() in {"j","ja","y","yes"}
+
+    def _download(self,url,target):
+        print(f"[INFO] Lade Ollama von {url} …")
+        with urllib.request.urlopen(url,timeout=30) as response,open(target,"wb") as output:
+            total=int(response.headers.get("Content-Length",0));received=0;next_report=0
+            while chunk:=response.read(1024*1024):
+                output.write(chunk);received+=len(chunk)
+                if total and received>=next_report:
+                    print(f"[DOWNLOAD] {received*100//total}%",end="\r",flush=True)
+                    next_report=received+max(total//100,1024*1024)
+        print("[DOWNLOAD] Fertig.          ")
+
+    def _install(self):
+        if os.name=="nt":
+            if not self._confirm_install("Ollama fehlt. Den offiziellen Windows-Installer herunterladen und starten?"):
+                raise RuntimeError("Ollama-Installation vom Benutzer abgebrochen.")
+            target=Path(tempfile.gettempdir())/"OllamaSetup.exe"
+            self._download(OLLAMA_WINDOWS_INSTALLER,target)
+            print("[INFO] Starte den offiziellen Installer; eine Windows-Bestätigung kann erscheinen …")
+            subprocess.run([str(target)],check=True)
+        else:
+            machine=platform.machine().lower();arch="arm64" if machine in {"aarch64","arm64"} else "amd64" if machine in {"x86_64","amd64"} else None
+            if not arch:raise RuntimeError(f"Nicht unterstützte Linux-Architektur: {machine}")
+            if not self._confirm_install("Ollama fehlt. Das offizielle Linux-Paket herunterladen und mit sudo nach /usr installieren?"):
+                raise RuntimeError("Ollama-Installation vom Benutzer abgebrochen.")
+            fd,path=tempfile.mkstemp(prefix="ollama-",suffix=".tar.zst");os.close(fd);target=Path(path)
+            try:
+                self._download(OLLAMA_LINUX_DOWNLOAD.format(arch=arch),target)
+                print("[INFO] Installiere Paket; sudo kann nach deinem Passwort fragen …")
+                subprocess.run(["sudo","tar","--zstd","-x","-f",str(target),"-C","/usr"],check=True)
+            finally:target.unlink(missing_ok=True)
+        self.executable=self._find_executable()
+        if not self.executable:raise RuntimeError("Installation beendet, aber 'ollama' wurde nicht gefunden. Terminal neu öffnen und erneut starten.")
+
+    def _exe(self):
+        if not self.executable:self.executable=self._find_executable()
+        if not self.executable:self._install()
+        return self.executable
+
     def api(self,path,payload=None,timeout=30):
         r=urllib.request.Request(URL+path, data=json.dumps(payload).encode() if payload else None, headers={"Content-Type":"application/json"})
         with urllib.request.urlopen(r,timeout=timeout) as response:return json.load(response)
     def start(self):
         try:self.api("/api/tags",timeout=2); print("[OK] Ollama läuft bereits."); return
         except (OSError,urllib.error.URLError,TimeoutError):pass
-        exe=shutil.which("ollama")
-        if not exe: raise RuntimeError("Ollama ist nicht installiert oder nicht im PATH.")
+        exe=self._exe()
         print("[INFO] Starte Ollama …"); kw={"stdin":subprocess.DEVNULL,"stdout":subprocess.DEVNULL,"stderr":subprocess.DEVNULL}
         if os.name=="nt":kw["creationflags"]=subprocess.CREATE_NEW_PROCESS_GROUP
         else:kw["start_new_session"]=True
@@ -57,7 +113,9 @@ class Ollama:
         if models:
             fit=[m for m in models if m.get("size",0)<max(.5,(memory()-2)*.55)*2**30]
             return max(fit or models,key=lambda m:m.get("size",0))["name"]
-        print(f"[INFO] Lade {FALLBACK} …"); subprocess.run(["ollama","pull",FALLBACK],check=True); return FALLBACK
+        print(f"[INFO] Kein lokales Modell gefunden. Lade {FALLBACK} …")
+        subprocess.run([self._exe(),"pull",FALLBACK],check=True)
+        return FALLBACK
     def ask(self,model,text):
         if result:=subnet(text):return result
         p={"model":model,"messages":[{"role":"system","content":PROMPT},{"role":"user","content":text}],"stream":False,"keep_alive":"2m","options":{"temperature":.1,"num_ctx":4096 if memory(True)>=4 else 2048}}

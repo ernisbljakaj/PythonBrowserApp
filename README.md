@@ -8,6 +8,13 @@ weiterhin sein ereignisgesteuertes Clipboard-Backend. Während einer laufenden
 Anfrage ersetzt die letzte neue Kopie eine ältere noch nicht abgeschlossene
 Anfrage.
 
+Fehlt Ollama, fragt das Programm vor einer Installation nach. Unter Fedora wird
+das offizielle Archiv von `ollama.com/download` geladen und erst nach der
+Bestätigung mit `sudo tar` nach `/usr` entpackt; es wird kein Remote-Skript an
+eine Shell weitergereicht. Unter Windows wird nach Bestätigung der offizielle
+Installer von `ollama.com` gestartet. Fehlt nur ein Modell, lädt Ollama einmalig
+`qwen2.5:0.5b`; vorhandene, zur RAM-Größe passende Modelle werden bevorzugt.
+
 ## Tests
 
 ```bash
