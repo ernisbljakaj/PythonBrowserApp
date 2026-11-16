@@ -446,8 +446,8 @@ def main():
             return
     init_providers()
     threading.Thread(target=worker, daemon=True).start()
-    if IS_WINDOWS:
-        tray=TrayApp(open_settings, lambda: shutdown.set());tray.start()
+    #if IS_WINDOWS:
+        #tray=TrayApp(open_settings, lambda: shutdown.set());tray.start()
 
     if IS_WINDOWS:
         WIN_CLIP=WindowsClipboard()
