@@ -16,12 +16,14 @@ def test_identical_manual_events_are_enqueued_twice(monkeypatch):
     assert second[0] > first[0]
 
 def test_401_returns_no_answer(monkeypatch):
-    app.PROVIDERS[0]["key"]="x";app.PROVIDERS[0]["models"]=["llama-3.1-8b-instant"]
+    app.configured_provider="Groq"
+    app.PROVIDERS[0]["key"]="x";app.PROVIDERS[0]["models"]=["openai/gpt-oss-20b"]
     monkeypatch.setattr(app.requests,"post",lambda *a,**k: types.SimpleNamespace(status_code=401,text="",headers={}))
     assert app.call_ai("frage") is None
 
 def test_timeout_returns_no_answer(monkeypatch):
-    app.PROVIDERS[0]["key"]="x";app.PROVIDERS[0]["models"]=["llama-3.1-8b-instant"]
+    app.configured_provider="Groq"
+    app.PROVIDERS[0]["key"]="x";app.PROVIDERS[0]["models"]=["openai/gpt-oss-20b"]
     monkeypatch.setattr(app.requests,"post",lambda *a,**k: (_ for _ in ()).throw(requests.Timeout()))
     monkeypatch.setattr(app.time,"sleep",lambda *_: None)
     assert app.call_ai("frage") is None
@@ -34,11 +36,27 @@ def test_keyring_save_and_load(monkeypatch):
     assert app.load_settings() and app.GROQ_API_KEY == "fake"
 
 def test_http_429_returns_no_answer(monkeypatch):
-    app.PROVIDERS[0]["key"]="x";app.PROVIDERS[0]["models"]=["llama-3.1-8b-instant"]
+    app.configured_provider="Groq"
+    app.PROVIDERS[0]["key"]="x";app.PROVIDERS[0]["models"]=["openai/gpt-oss-20b"]
     response=types.SimpleNamespace(status_code=429,text="",headers={"Retry-After":"1"})
     monkeypatch.setattr(app.requests,"post",lambda *a,**k: response)
     monkeypatch.setattr(app.time,"sleep",lambda *_: None)
     assert app.call_ai("frage") is None
+
+def test_only_selected_provider_is_called(monkeypatch):
+    app.configured_provider="Groq"
+    app.PROVIDERS[0]["key"]="x";app.PROVIDERS[0]["models"]=["openai/gpt-oss-20b"]
+
+def test_404_removes_unavailable_model(monkeypatch):
+    app.configured_provider="Groq";provider=app.PROVIDERS[0];provider["key"]="x";provider["models"]=["openai/gpt-oss-20b"]
+    monkeypatch.setattr(app.requests,"post",lambda *a,**k: types.SimpleNamespace(status_code=404,text="",headers={}))
+    assert app.call_ai("frage") is None
+    assert provider["models"] == []
+    app.PROVIDERS[1]["key"]="bad";app.PROVIDERS[1]["models"]=["gemini-2.5-flash-lite"]
+    calls=[]
+    monkeypatch.setattr(app.requests,"post",lambda url,**k: calls.append(url) or types.SimpleNamespace(status_code=401,text="",headers={}))
+    app.call_ai("frage")
+    assert len(calls)==1 and "groq" in calls[0]
 
 class Icon:
     def __init__(self): self.updated=False;self.stopped=False

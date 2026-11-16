@@ -1,9 +1,9 @@
 import threading
-import pystray
-from PIL import Image, ImageDraw
 
 class TrayApp:
     def __init__(self, on_settings, on_exit):
+        import pystray
+        from PIL import Image, ImageDraw
         self.active=True;self.on_settings=on_settings;self.on_exit=on_exit
         image=Image.new("RGB",(16,16),(30,100,210));ImageDraw.Draw(image).ellipse((4,4,12,12),fill="white")
         self.icon=pystray.Icon("AIClipboardCloud",image,"AI Clipboard",pystray.Menu(

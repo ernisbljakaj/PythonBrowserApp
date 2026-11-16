@@ -46,6 +46,8 @@ def load_settings():
     configured_provider=keyring.get_password(KEYRING_SERVICE,"provider")
     if configured_provider=="Groq":GROQ_API_KEY=keyring.get_password(KEYRING_SERVICE,"Groq") or ""
     if configured_provider=="Google AI Studio":GEMINI_API_KEY=keyring.get_password(KEYRING_SERVICE,"Google AI Studio") or ""
+    for provider in PROVIDERS if "PROVIDERS" in globals() else ():
+        provider["key"] = GROQ_API_KEY if provider["name"] == "Groq" else GEMINI_API_KEY
     return bool(configured_provider and (GROQ_API_KEY or GEMINI_API_KEY))
 
 def open_settings():
@@ -102,7 +104,7 @@ instance_lock=None
 # Ausschließlich diese Modelle werden automatisch angesprochen. Die Liste ist
 # bewusst fest verdrahtet, damit eine Modell-Liste des Anbieters nie unbemerkt
 # auf ein kostenpflichtiges Modell umschaltet.
-FREE_MODELS = {"Groq": ["llama-3.1-8b-instant"], "Google AI Studio": ["gemini-2.5-flash-lite"]}
+FREE_MODELS = {"Groq": ["openai/gpt-oss-20b"], "Google AI Studio": ["gemini-2.5-flash-lite"]}
 
 class WindowsClipboard:
     CF_UNICODETEXT=13;GMEM_MOVEABLE=2;WM_CLIPBOARDUPDATE=0x031D;WM_CLOSE=0x10;WM_DESTROY=2
@@ -288,8 +290,8 @@ def fetch_available_models(provider):
 
 def init_providers():
     for provider in PROVIDERS:
-        if provider["key"] and not provider["key"].startswith("DEIN_"):
-            fetch_available_models(provider)
+        if provider["name"] == configured_provider and provider["key"] and not provider["key"].startswith("DEIN_"):
+            provider["models"] = list(FREE_MODELS[provider["name"]])
 
 
 def promote_model(provider, model):
@@ -306,11 +308,13 @@ def demote_model(provider, model):
 
 def call_ai(prompt):
     for provider in PROVIDERS:
+        if provider["name"] != configured_provider:
+            continue
         if not provider["key"] or provider["key"].startswith("DEIN_"):
             continue
 
         if not provider["models"]:
-            fetch_available_models(provider)
+            provider["models"] = list(FREE_MODELS[provider["name"]])
 
         headers = {
             "Authorization": f"Bearer {provider['key']}",
@@ -346,6 +350,11 @@ def call_ai(prompt):
                         if model in provider["models"]:
                             provider["models"].remove(model)
                         break
+
+                    if r.status_code in (400, 401, 403):
+                        message = {400:"Anfrage vom Anbieter abgelehnt (Modell oder API-Format prüfen).",401:"API-Key ungültig oder abgelaufen.",403:"API-Key hat keine Berechtigung."}[r.status_code]
+                        print(f"{provider['name']}: {message}")
+                        return None
 
                     if r.status_code == 429:
                         retry_after=float(r.headers.get("Retry-After", "60"))
