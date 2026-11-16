@@ -2,6 +2,7 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import requests
@@ -12,7 +13,8 @@ CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
 
 def load_env(filepath=None):
     if filepath is None:
-        filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        filepath = os.path.join(base_dir, ".env")
     if os.path.exists(filepath):
         with open(filepath, encoding="utf-8") as f:
             for line in f:
