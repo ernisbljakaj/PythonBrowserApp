@@ -111,6 +111,7 @@ instance_lock=None
 # bewusst fest verdrahtet, damit eine Modell-Liste des Anbieters nie unbemerkt
 # auf ein kostenpflichtiges Modell umschaltet.
 FREE_MODELS = {"Groq": ["openai/gpt-oss-20b"], "Google AI Studio": ["gemini-2.5-flash-lite"]}
+SYSTEM_PROMPT="Du bist ein präziser und professioneller KI-Assistent. Beantworte Fragen direkt, sachlich und so kurz wie sinnvoll. Verzichte auf unnötige Einleitungen, Floskeln, Emojis, Wiederholungen und lange Erklärungen. Bei einfachen Fragen gib nur die Antwort aus. Antworte in der Sprache der Anfrage. Wenn ausdrücklich ausführliche Antworten, Code oder bestimmte Formate verlangt werden, erfülle diese Anforderungen vollständig. Erfinde keine Fakten."
 
 class WindowsClipboard:
     CF_UNICODETEXT=13;GMEM_MOVEABLE=2;WM_CLIPBOARDUPDATE=0x031D;WM_CLOSE=0x10;WM_DESTROY=2
@@ -254,7 +255,7 @@ def notify(message):
     logging.info("Benachrichtigung: %s",message)
     try:
         if IS_WINDOWS:
-            if tray: tray.icon.notify(message, "KI-Assistent")
+            return  # Benachrichtigungen nach Antworten bleiben deaktiviert.
         elif shutil.which("notify-send"):
             subprocess.run(["notify-send", "KI-Assistent", message], check=False)
     except Exception:
@@ -340,10 +341,12 @@ def call_ai(prompt):
         chat_url = f"{provider['base_url']}/chat/completions"
 
         for model in list(provider["models"]):
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-            }
+            if provider["name"] == "Groq":
+                payload={"model":model,"messages":[{"role":"system","content":SYSTEM_PROMPT},{"role":"user","content":prompt}]}
+            else:
+                chat_url=f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                headers={"x-goog-api-key":provider["key"],"Content-Type":"application/json"}
+                payload={"systemInstruction":{"parts":[{"text":SYSTEM_PROMPT}]},"contents":[{"parts":[{"text":prompt}]}]}
 
             for attempt in range(MAX_RETRIES_PER_MODEL + 1):
                 wait = 1.5 ** attempt + random.uniform(0, 0.5)
@@ -362,7 +365,7 @@ def call_ai(prompt):
                         promote_model(provider, model)
                         print(f"Erfolg über {provider['name']} ({model})")
                         logging.info("%s-Antwort erhalten",provider["name"])
-                        return data["choices"][0]["message"]["content"]
+                        return data["choices"][0]["message"]["content"] if provider["name"]=="Groq" else data["candidates"][0]["content"]["parts"][0]["text"]
 
                     if r.status_code == 404:
                         print(f"Modell {model} veraltet (404). Entferne es...")

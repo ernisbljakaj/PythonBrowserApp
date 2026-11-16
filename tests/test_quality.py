@@ -58,6 +58,18 @@ def test_404_removes_unavailable_model(monkeypatch):
     app.call_ai("frage")
     assert len(calls)==1 and "groq" in calls[0]
 
+def test_groq_includes_system_prompt(monkeypatch):
+    app.configured_provider="Groq";p=app.PROVIDERS[0];p["key"]="x";p["models"]=["openai/gpt-oss-20b"]
+    seen={}
+    monkeypatch.setattr(app.requests,"post",lambda *a,**k: seen.update(k) or types.SimpleNamespace(status_code=200,json=lambda:{"choices":[{"message":{"content":"ok"}}]}))
+    assert app.call_ai("frage")=="ok" and seen["json"]["messages"][0]["content"]==app.SYSTEM_PROMPT
+
+def test_gemini_uses_system_instruction(monkeypatch):
+    app.configured_provider="Google AI Studio";p=app.PROVIDERS[1];p["key"]="x";p["models"]=["gemini-2.5-flash-lite"]
+    seen={}
+    monkeypatch.setattr(app.requests,"post",lambda *a,**k: seen.update(k) or types.SimpleNamespace(status_code=200,json=lambda:{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}))
+    assert app.call_ai("frage")=="ok" and seen["json"]["systemInstruction"]["parts"][0]["text"]==app.SYSTEM_PROMPT
+
 class Icon:
     def __init__(self): self.updated=False;self.stopped=False
     def update_menu(self): self.updated=True
