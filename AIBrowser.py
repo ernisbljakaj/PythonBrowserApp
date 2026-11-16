@@ -18,7 +18,8 @@ from single_instance import SingleInstance
 IS_WINDOWS = os.name == "nt"
 LOG_DIR=os.path.join(os.getenv("LOCALAPPDATA",os.path.expanduser("~")),"AIClipboardCloud")
 os.makedirs(LOG_DIR,exist_ok=True)
-logging.basicConfig(filename=os.path.join(LOG_DIR,"app.log"),level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(filename=os.path.join(LOG_DIR,"app.log"),level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s",force=True)
+logging.info("Programmstart")
 CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
 
 
@@ -48,7 +49,7 @@ def load_settings():
     if configured_provider=="Google AI Studio":GEMINI_API_KEY=keyring.get_password(KEYRING_SERVICE,"Google AI Studio") or ""
     for provider in PROVIDERS if "PROVIDERS" in globals() else ():
         provider["key"] = GROQ_API_KEY if provider["name"] == "Groq" else GEMINI_API_KEY
-    return bool(configured_provider and (GROQ_API_KEY or GEMINI_API_KEY))
+    ok=bool(configured_provider and (GROQ_API_KEY or GEMINI_API_KEY));logging.info("API-Einstellungen geladen: Anbieter=%s, konfiguriert=%s",configured_provider,ok);return ok
 
 def open_settings():
     root=tk.Tk();root.title("AI Clipboard – Cloud-Einstellungen");root.resizable(False,False)
@@ -135,16 +136,18 @@ class WindowsClipboard:
             self.u.CloseClipboard()
     def start(self,callback):
         def run():
+            logging.info("Starte Win32-Clipboard-Listener")
             P=ctypes.WINFUNCTYPE(ctypes.c_ssize_t,ctypes.c_void_p,ctypes.wintypes.UINT,ctypes.c_size_t,ctypes.c_ssize_t)
             @P
             def proc(h,m,w,l):
-                if m==self.WM_CLIPBOARDUPDATE:callback()
+                if m==self.WM_CLIPBOARDUPDATE:logging.info("Clipboard-Ereignis empfangen");callback()
                 if m==self.WM_DESTROY:self.u.PostQuitMessage(0)
                 return self.u.DefWindowProcW(h,m,w,l)
             self._proc=proc;name="AIClipboardCloud";self.u.CreateWindowExW.restype=ctypes.c_void_p;self.u.RegisterClassW.restype=ctypes.wintypes.ATOM
             class WC(ctypes.Structure):_fields_=[("style",ctypes.c_uint),("lpfnWndProc",P),("cbClsExtra",ctypes.c_int),("cbWndExtra",ctypes.c_int),("hInstance",ctypes.c_void_p),("hIcon",ctypes.c_void_p),("hCursor",ctypes.c_void_p),("hbrBackground",ctypes.c_void_p),("lpszMenuName",ctypes.c_wchar_p),("lpszClassName",ctypes.c_wchar_p)]
             self._wc=WC(0,proc,0,0,self.k.GetModuleHandleW(None),None,None,None,None,name);self.u.RegisterClassW(ctypes.byref(self._wc));self.hwnd=self.u.CreateWindowExW(0,name,name,0,0,0,0,0,ctypes.c_void_p(-3),None,self._wc.hInstance,None)
-            if not self.hwnd or not self.u.AddClipboardFormatListener(self.hwnd):self.ready.set();return
+            if not self.hwnd or not self.u.AddClipboardFormatListener(self.hwnd):logging.error("Clipboard-Listener-Initialisierung fehlgeschlagen");self.ready.set();return
+            logging.info("Win32-Fenster und Clipboard-Listener registriert")
             self.ready.set();msg=ctypes.wintypes.MSG()
             while self.u.GetMessageW(ctypes.byref(msg),None,0,0)>0:self.u.DispatchMessageW(ctypes.byref(msg))
         self.thread=threading.Thread(target=run,daemon=True);self.thread.start();self.ready.wait(2)
@@ -158,20 +161,7 @@ def get_clipboard():
         if IS_WINDOWS:
             if WIN_CLIP:
                 return WIN_CLIP.read()
-            r = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw",
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=5,
-                creationflags=CREATE_NO_WINDOW,
-            )
-            return r.stdout if r.returncode == 0 and r.stdout else ""
+            return ""
 
         # Linux: Wayland (wl-paste) oder X11 (xclip / xsel)
         if shutil.which("wl-paste"):
